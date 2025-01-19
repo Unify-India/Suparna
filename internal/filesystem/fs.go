@@ -1,44 +1,67 @@
 package filesystem
 
 import (
-	"fmt"
-	"io/fs"
+	"crypto/md5"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"time"
 )
 
-// WalkDir walks through the given directory and its subdirectories.
-func WalkDir(dir string) error {
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+// FileMetadata represents metadata for a file
+type FileMetadata struct {
+	Name         string
+	Path         string
+	Size         int64
+	ModifiedTime time.Time
+	Hash         string
+}
+
+// ScanDirectory scans a directory and returns file metadata
+func ScanDirectory(root string) ([]FileMetadata, error) {
+	var files []FileMetadata
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return fmt.Errorf("error walking directory: %w", err)
+			return err
 		}
-
-		if d.IsDir() {
-			// Handle directories here (e.g., print directory name)
-			fmt.Println("Directory:", path)
-		} else {
-			// Handle files here (e.g., print file name and collect metadata)
-			fmt.Println("File:", path)
-			// Add code to collect file metadata (size, creation time, etc.)
+		if !info.IsDir() {
+			hash, _ := computeHash(path)
+			files = append(files, FileMetadata{
+				Name:         info.Name(),
+				Path:         path,
+				Size:         info.Size(),
+				ModifiedTime: info.ModTime(),
+				Hash:         hash,
+			})
 		}
-
 		return nil
 	})
-
-	if err != nil {
-		return fmt.Errorf("error walking directory: %w", err)
-	}
-	return nil
+	return files, err
 }
 
-// GetFileInfo gets basic information about a file.
-func GetFileInfo(filePath string) (os.FileInfo, error) {
-	fileInfo, err := os.Stat(filePath)
+// computeHash computes the MD5 hash of a file
+func computeHash(path string) (string, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("error getting file info: %w", err)
+		return "", err
 	}
-	return fileInfo, nil
-}
+	defer file.Close()
 
-// (Add more functions for file system operations as needed)
+	hash := md5.New()
+	_, err = os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+
+	buffer := make([]byte, 4096)
+	for {
+		n, err := file.Read(buffer)
+		if n > 0 {
+			hash.Write(buffer[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}

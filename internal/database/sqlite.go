@@ -3,26 +3,45 @@ package database
 import (
 	"database/sql"
 
-	_ "github.com/mattn/go-sqlite3" // Import the SQLite driver
+	_ "github.com/mattn/go-sqlite3"
 )
 
-// SQLite represents a connection to an SQLite database.
-type SQLite struct {
-	db *sql.DB
-}
+var db *sql.DB
 
-// NewSQLite creates a new connection to an SQLite database.
-func NewSQLite(filePath string) (*SQLite, error) {
-	db, err := sql.Open("sqlite3", filePath)
+// Initialize sets up the SQLite database
+func Initialize(path string) error {
+	var err error
+	db, err = sql.Open("sqlite3", path)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &SQLite{db: db}, nil
+
+	// Create tables
+	query := `
+	CREATE TABLE IF NOT EXISTS files (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		path TEXT NOT NULL UNIQUE,
+		size INTEGER,
+		modified_time DATETIME,
+		hash TEXT
+	);
+	`
+	_, err = db.Exec(query)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-// Close closes the connection to the SQLite database.
-func (s *SQLite) Close() error {
-	return s.db.Close()
+// GetDB returns the database connection
+func GetDB() *sql.DB {
+	return db
 }
 
-// (Add more methods for database interactions as needed)
+// Close closes the database connection
+func Close() {
+	if db != nil {
+		db.Close()
+	}
+}
