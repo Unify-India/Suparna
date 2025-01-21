@@ -3,8 +3,10 @@ package filesystem
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"log"
 	"os"
 	"path/filepath"
+	"suparna/internal/database"
 	"time"
 )
 
@@ -17,30 +19,51 @@ type FileMetadata struct {
 	Hash         string
 }
 
-// ScanDirectory scans a directory and returns file metadata
-func ScanDirectory(root string) ([]FileMetadata, error) {
+// ScanDirectoryAndSaveMetadata scans a directory, saves metadata to SQLite, and returns the file metadata
+func ScanDirectoryAndSaveMetadata(root string) ([]FileMetadata, error) {
 	var files []FileMetadata
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			log.Printf("Error reading file %s: %v\n", path, err)
+			return nil // Skip this file and continue with the next
 		}
 		if !info.IsDir() {
-			hash, _ := computeHash(path)
-			files = append(files, FileMetadata{
+			hash, hashErr := computeHash(path)
+			if hashErr != nil {
+				log.Printf("Error computing hash for %s: %v\n", path, hashErr)
+				return nil // Skip this file and continue with the next
+			}
+
+			file := FileMetadata{
 				Name:         info.Name(),
 				Path:         path,
 				Size:         info.Size(),
 				ModifiedTime: info.ModTime(),
 				Hash:         hash,
-			})
+			}
+			files = append(files, file)
+
+			// Insert metadata into the database
+			db := database.GetDB()
+			_, insertErr := db.Exec(`INSERT OR REPLACE INTO files (name, path, size, modified_time, hash) 
+				VALUES (?, ?, ?, ?, ?)`,
+				file.Name, file.Path, file.Size, file.ModifiedTime, file.Hash)
+			if insertErr != nil {
+				log.Printf("Error inserting file %s into database: %v\n", path, insertErr)
+			}
 		}
 		return nil
 	})
+
+	// Log all files added to the database
+	// log.Printf("Files scanned and inserted: %+v", files)
+
 	return files, err
 }
 
 // computeHash computes the MD5 hash of a file
 func computeHash(path string) (string, error) {
+	// log.Printf("Computing hash for %s\n", path)
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
