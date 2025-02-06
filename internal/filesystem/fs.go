@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// FileMetadata represents metadata for a file
+// FileMetadata struct
 type FileMetadata struct {
 	Name         string
 	Path         string
@@ -19,51 +19,50 @@ type FileMetadata struct {
 	Hash         string
 }
 
-// ScanDirectoryAndSaveMetadata scans a directory, saves metadata to SQLite, and returns the file metadata
+// ScanDirectoryAndSaveMetadata scans directory and saves metadata
 func ScanDirectoryAndSaveMetadata(root string) ([]FileMetadata, error) {
 	var files []FileMetadata
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	fileChan := make(chan FileMetadata, 100) // Buffered channel for concurrent processing
+
+	go func() {
+		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil // Skip errors
+			}
+			if !d.IsDir() {
+				info, _ := d.Info()
+				hash, _ := computeHash(path)
+				fileChan <- FileMetadata{
+					Name:         info.Name(),
+					Path:         path,
+					Size:         info.Size(),
+					ModifiedTime: info.ModTime(),
+					Hash:         hash,
+				}
+			}
+			return nil
+		})
+		close(fileChan)
+	}()
+
+	db := database.GetDB()
+	tx, _ := db.Begin() // Start transaction
+
+	for file := range fileChan {
+		files = append(files, file)
+		_, err := tx.Exec(`INSERT OR REPLACE INTO files (name, path, size, modified_time, hash) 
+			VALUES (?, ?, ?, ?, ?)`, file.Name, file.Path, file.Size, file.ModifiedTime, file.Hash)
 		if err != nil {
-			log.Printf("Error reading file %s: %v\n", path, err)
-			return nil // Skip this file and continue with the next
+			log.Println("Error inserting:", err)
 		}
-		if !info.IsDir() {
-			hash, hashErr := computeHash(path)
-			if hashErr != nil {
-				log.Printf("Error computing hash for %s: %v\n", path, hashErr)
-				return nil // Skip this file and continue with the next
-			}
+	}
 
-			file := FileMetadata{
-				Name:         info.Name(),
-				Path:         path,
-				Size:         info.Size(),
-				ModifiedTime: info.ModTime(),
-				Hash:         hash,
-			}
-			files = append(files, file)
-
-			// Insert metadata into the database
-			db := database.GetDB()
-			_, insertErr := db.Exec(`INSERT OR REPLACE INTO files (name, path, size, modified_time, hash) 
-				VALUES (?, ?, ?, ?, ?)`,
-				file.Name, file.Path, file.Size, file.ModifiedTime, file.Hash)
-			if insertErr != nil {
-				log.Printf("Error inserting file %s into database: %v\n", path, insertErr)
-			}
-		}
-		return nil
-	})
-
-	// Log all files added to the database
-	// log.Printf("Files scanned and inserted: %+v", files)
-
-	return files, err
+	tx.Commit() // Commit all inserts in one go
+	return files, nil
 }
 
-// computeHash computes the MD5 hash of a file
+// Compute hash
 func computeHash(path string) (string, error) {
-	// log.Printf("Computing hash for %s\n", path)
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -71,20 +70,6 @@ func computeHash(path string) (string, error) {
 	defer file.Close()
 
 	hash := md5.New()
-	_, err = os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-
-	buffer := make([]byte, 4096)
-	for {
-		n, err := file.Read(buffer)
-		if n > 0 {
-			hash.Write(buffer[:n])
-		}
-		if err != nil {
-			break
-		}
-	}
+	_, _ = file.WriteTo(hash)
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

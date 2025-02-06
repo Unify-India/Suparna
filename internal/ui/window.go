@@ -4,6 +4,7 @@ import (
 	"image/color"
 	"log"
 	"strconv"
+	"strings"
 	"suparna/internal/filesystem"
 	"time"
 
@@ -12,32 +13,21 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
-// Set styled text with proper error or success styling
-func setStyledText(output *canvas.Text, message string, isError bool) {
-	output.Text = message
-	if isError {
-		output.Color = color.RGBA{R: 255, G: 0, B: 0, A: 255} // Red for errors
-	} else {
-		bgColor := fyne.CurrentApp().Settings().Theme().Color(theme.ColorNameBackground, theme.VariantDark)
-		if isDarkTheme(bgColor) {
-			output.Color = color.White
-		} else {
-			output.Color = color.Black
-		}
-	}
-	output.Refresh()
+// FileData represents a single row in the UI table
+type FileData struct {
+	Name         string
+	Path         string
+	Size         string
+	ModifiedTime string
+	Hash         string
 }
 
-// Helper function to check if the theme is dark
-func isDarkTheme(bgColor color.Color) bool {
-	r, g, b, _ := bgColor.RGBA()
-	return (r+g+b)/3 < 128*256
-}
+var files []FileData // Global slice to hold file data
 
+// UI Function
 func Launch() {
 	log.Println("Starting Suparna application...")
 
@@ -45,12 +35,13 @@ func Launch() {
 	window := myApp.NewWindow("Suparna File Manager")
 	window.Resize(fyne.NewSize(1000, 800))
 
-	// UI Components
 	label := widget.NewLabel("Welcome to Suparna!")
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("Enter directory path...")
 
 	output := canvas.NewText("", color.Black)
+	spinner := widget.NewProgressBarInfinite() // Progress indicator
+	spinner.Hide()
 
 	// Directory selection button
 	selectButton := widget.NewButton("Select Directory", func() {
@@ -61,65 +52,89 @@ func Launch() {
 		}, window).Show()
 	})
 
-	// File data and table initialization
-	fileData := [][]string{}
-	fileTable := widget.NewTable(
-		func() (int, int) {
-			return len(fileData), 5
-		},
+	// Create a Table for File Display
+	table := widget.NewTable(
+		func() (int, int) { return len(files) + 1, 5 }, // Rows and columns
+
 		func() fyne.CanvasObject {
-			return widget.NewLabel("")
+			return widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: false})
 		},
+
 		func(id widget.TableCellID, cell fyne.CanvasObject) {
 			label := cell.(*widget.Label)
-			if id.Row < len(fileData) {
-				label.SetText(fileData[id.Row][id.Col])
+			if id.Row == 0 { // Header row
+				headers := []string{"Name", "Path", "Size (KB)", "Modified", "Hash"}
+				label := cell.(*widget.Label)
+				label.Wrapping = fyne.TextWrapWord // Enable word wrapping
+				label.SetText(headers[id.Col])
+				label.TextStyle = fyne.TextStyle{Bold: true}
+			} else {
+				row := files[id.Row-1]
+				data := []string{row.Name, row.Path, row.Size, row.ModifiedTime, row.Hash}
+				label.SetText(data[id.Col])
 			}
 		},
 	)
 
-	// Scan button to process the directory
+	// Set Column Widths
+	table.SetColumnWidth(0, 300) // Name
+	table.SetColumnWidth(1, 350) // Path
+	table.SetColumnWidth(2, 100) // Size
+	table.SetColumnWidth(3, 220) // Modified Time
+	table.SetColumnWidth(4, 300) // Hash
+
+	// Wrap the table inside a scroll container and set its minimum size
+	tableContainer := container.NewScroll(table)
+	tableContainer.SetMinSize(fyne.NewSize(950, 400)) // Adjust table height
+
+	// Scan button
 	scanButton := widget.NewButton("Scan Directory", func() {
 		dirPath := entry.Text
+		// dirPath := "/home/iam5k/Documents"
 		if dirPath == "" {
-			setStyledText(output, "Please select a directory first.", true)
+			output.Text = "Please select a directory first."
+			output.Color = color.RGBA{R: 255, G: 0, B: 0, A: 255} // Red for errors
+			output.Refresh()
 			return
 		}
 
-		files, err := filesystem.ScanDirectoryAndSaveMetadata(dirPath)
-		if err != nil {
-			setStyledText(output, "Error: "+err.Error(), true)
-			return
-		}
-
-		setStyledText(output, "Directory scanned successfully.", false)
-
-		fileData = [][]string{} // Clear existing data
-		for _, file := range files {
-			fileData = append(fileData, []string{
-				file.Name,
-				file.Path,
-				strconv.FormatInt(file.Size, 10),
-				file.ModifiedTime.Format(time.RFC1123),
-				file.Hash,
-			})
-		}
-		fileTable.Refresh()
+		spinner.Show() // Show loading spinner
+		go func() {
+			defer spinner.Hide()
+			scannedFiles, err := filesystem.ScanDirectoryAndSaveMetadata(dirPath)
+			if err != nil {
+				output.Text = "Error: " + err.Error()
+				output.Color = color.RGBA{R: 255, G: 0, B: 0, A: 255}
+			} else {
+				output.Text = "Directory scanned successfully!"
+				output.Color = color.Black
+				files = []FileData{}
+				for _, f := range scannedFiles {
+					files = append(files, FileData{
+						Name:         f.Name,
+						Path:         strings.TrimPrefix(f.Path, dirPath),
+						Size:         strconv.FormatInt(f.Size/1024, 10) + " KB",
+						ModifiedTime: f.ModifiedTime.Format(time.RFC1123),
+						Hash:         f.Hash,
+					})
+				}
+				table.Refresh() // Update UI
+			}
+			output.Refresh()
+		}()
 	})
 
-	// Table scroll container
-	tableContainer := container.NewScroll(fileTable)
-	tableContainer.SetMinSize(fyne.NewSize(900, 300))
-
-	// Layout and content setup
+	// Layout
 	content := container.NewVBox(
 		label,
 		entry,
 		selectButton,
 		scanButton,
 		output,
-		tableContainer,
+		spinner,
+		tableContainer, // Use the wrapped scrollable table
 	)
+
 	window.SetContent(content)
 	window.ShowAndRun()
 }
