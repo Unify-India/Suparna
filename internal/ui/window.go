@@ -64,8 +64,6 @@ func Launch() {
 			label := cell.(*widget.Label)
 			if id.Row == 0 { // Header row
 				headers := []string{"Name", "Path", "Size (KB)", "Modified", "Hash"}
-				label := cell.(*widget.Label)
-				label.Wrapping = fyne.TextWrapWord // Enable word wrapping
 				label.SetText(headers[id.Col])
 				label.TextStyle = fyne.TextStyle{Bold: true}
 			} else {
