@@ -4,25 +4,23 @@ import (
 	"log"
 	"suparna/internal/database"
 	"suparna/internal/ui"
+
+	"fyne.io/fyne/v2/app"
 )
 
 func main() {
 	log.Println("Starting Suparna application...")
-	// Initialize database
+	// Initialize the app with a unique ID
+	myApp := app.NewWithID("suparna")
+	window := myApp.NewWindow("Suparna File Manager")
+
+	// Initialize the database
 	err := database.Initialize("suparna.db")
 	if err != nil {
 		log.Fatalf("Database initialization failed: %v", err)
 	}
-	log.Println("Database initialized")
 	defer database.Close()
 
-	// Example usage of filesystem for setup
-	// rootPath := "/path/to/scan"
-	// _, fsErr := filesystem.ScanDirectory(rootPath)
-	// if fsErr != nil {
-	// 	log.Printf("Error during initial scan: %v", fsErr)
-	// }
-
-	// Launch the UI
-	ui.Launch()
+	// Launch the UI, passing the window instance
+	ui.Launch(window)
 }
