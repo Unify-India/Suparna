@@ -2,6 +2,7 @@ package filesystem
 
 import (
 	"crypto/md5"
+	"database/sql"
 	"encoding/hex"
 	"log"
 	"os"
@@ -23,9 +24,29 @@ type FileMetadata struct {
 var scanningAborted bool
 var scanningMutex sync.Mutex
 
+// getDirectoryCount returns the number of files in the DB whose path starts with the given root.
+func getDirectoryCount(root string) (int, error) {
+	db := database.GetDB()
+	// Ensure that root ends with a separator for more accurate matching.
+	pattern := root
+	if pattern[len(pattern)-1] != os.PathSeparator {
+		pattern += string(os.PathSeparator)
+	}
+	pattern += "%" // Match all files under the given directory
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM files WHERE path LIKE ?", pattern).Scan(&count)
+	return count, err
+}
+
 // ScanDirectory scans a directory and reports progress via callback
 func ScanDirectory(root string, progressCallback func(currentFile string, progress float64)) error {
-	var files []FileMetadata
+	// Check if the directory is already crawled; if yes, skip re scanning.
+	if count, err := getDirectoryCount(root); err == nil && count > 0 {
+		// Optionally inform the UI that scanning is complete.
+		progressCallback("Directory already scanned", 1.0)
+		return nil
+	}
+
 	fileChan := make(chan FileMetadata, 100) // Buffered channel for concurrent processing
 
 	// Reset abort flag before scan
@@ -79,11 +100,31 @@ func ScanDirectory(root string, progressCallback func(currentFile string, progre
 	tx, _ := db.Begin() // Start transaction
 
 	for file := range fileChan {
-		files = append(files, file)
-		_, err := tx.Exec(`INSERT OR REPLACE INTO files (name, path, size, modified_time, hash) 
-			VALUES (?, ?, ?, ?, ?)`, file.Name, file.Path, file.Size, file.ModifiedTime, file.Hash)
+		// Check for duplicate by file name or hash
+		var originalID int64
+		err := tx.QueryRow("SELECT id FROM files WHERE name=? OR hash=?", file.Name, file.Hash).Scan(&originalID)
 		if err != nil {
-			log.Println("Error inserting:", err)
+			if err == sql.ErrNoRows {
+				// Not found, insert into files table
+				res, err := tx.Exec(`INSERT INTO files (name, path, size, modified_time, hash)
+					VALUES (?, ?, ?, ?, ?)`, file.Name, file.Path, file.Size, file.ModifiedTime, file.Hash)
+				if err != nil {
+					// ...existing error handling...
+					log.Println("Error inserting into files:", err)
+					continue
+				}
+				originalID, _ = res.LastInsertId()
+			} else {
+				log.Println("Error during duplicate check:", err)
+				continue
+			}
+		} else {
+			// Duplicate found, insert into duplicates table
+			_, err = tx.Exec(`INSERT INTO duplicates (original_file_id, name, path, size, modified_time, hash)
+				VALUES (?, ?, ?, ?, ?, ?)`, originalID, file.Name, file.Path, file.Size, file.ModifiedTime, file.Hash)
+			if err != nil {
+				log.Println("Error inserting into duplicates:", err)
+			}
 		}
 	}
 

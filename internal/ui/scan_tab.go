@@ -3,9 +3,14 @@ package ui
 import (
 	"image/color"
 	"log"
+	"strconv"
+	"strings"
 	"suparna/internal/database"
 	"suparna/internal/filesystem"
 	"sync"
+	"time"
+
+	"os"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -41,6 +46,9 @@ func CreateScanTab() fyne.CanvasObject {
 
 	currentFileLabel := widget.NewLabel("") // Label for current file being scanned
 	currentFileLabel.Hide()
+
+	// New summary label below the table
+	summaryLabel := widget.NewLabel("")
 
 	// Stop scan flag
 	isScanning := false
@@ -125,6 +133,11 @@ func CreateScanTab() fyne.CanvasObject {
 				progress.Refresh()
 			})
 
+			// Reset scan button regardless of error
+			isScanning = false
+			scanButton.SetText("Scan Directory")
+			scanButton.Importance = widget.HighImportance
+
 			// ✅ Handle error properly
 			if err != nil {
 				log.Printf("Error during scan: %v", err)              // Log to console
@@ -134,9 +147,16 @@ func CreateScanTab() fyne.CanvasObject {
 				return
 			}
 
+			// Prepare directory filter pattern
+			dirPattern := dirPath
+			if dirPattern[len(dirPattern)-1] != os.PathSeparator {
+				dirPattern += string(os.PathSeparator)
+			}
+			dirPattern += "%"
+
 			// ✅ Fetch newly scanned files from the database
 			db := database.GetDB()
-			rows, err := db.Query("SELECT name, path, size, modified_time, hash FROM files ORDER BY modified_time DESC")
+			rows, err := db.Query("SELECT name, path, size, modified_time, hash FROM files WHERE path LIKE ? ORDER BY modified_time DESC", dirPattern)
 			if err != nil {
 				log.Printf("Database query error: %v", err)
 				output.Text = "DB Error: " + err.Error()
@@ -146,20 +166,32 @@ func CreateScanTab() fyne.CanvasObject {
 			}
 			defer rows.Close()
 
-			// Read rows into files slice
+			files = []FileData{}
+			count := 0
 			for rows.Next() {
-				var f FileData
-				var modifiedTimeStr string
-				err = rows.Scan(&f.Name, &f.Path, &f.Size, &modifiedTimeStr, &f.Hash)
+				var name, path, modTimeStr, hash string
+				var size int64
+				err = rows.Scan(&name, &path, &size, &modTimeStr, &hash)
 				if err != nil {
 					log.Printf("Error scanning row: %v", err)
 					continue
 				}
-				f.ModifiedTime = modifiedTimeStr
-				files = append(files, f)
+				// Convert modTimeStr if needed (assumed to be in RFC3339)
+				t, _ := time.Parse(time.RFC3339, modTimeStr)
+				files = append(files, FileData{
+					Name:         name,
+					Path:         strings.TrimPrefix(path, dirPath),
+					Size:         strconv.FormatInt(size/1024, 10) + " KB",
+					ModifiedTime: t.Format(time.RFC1123),
+					Hash:         hash,
+				})
+				count++
 			}
 
-			// Ensure table updates on UI thread
+			// Update summary with the number of scanned files
+			summaryLabel.SetText("Scanned files: " + strconv.Itoa(count))
+			// NOTE: Fyne widget.Table uses fixed row heights.
+			// If dynamic cell heights are needed (similar to Excel), consider using widget.List or a custom container that calculates preferred heights.
 			fyne.CurrentApp().Driver().AllWindows()[0].Canvas().Refresh(table)
 			table.Refresh()
 		}()
@@ -187,6 +219,7 @@ func CreateScanTab() fyne.CanvasObject {
 		currentFileLabel,
 		output,
 		tableContainer, // Table inside a scrollable container
+		summaryLabel,   // New summary below the table
 	)
 
 	return content
